@@ -33,8 +33,8 @@ class ForwardMessages:
         message_thread_id: int = None,
         disable_notification: bool = None,
         schedule_date: datetime = None,
-        drop_author: bool = None,
-        drop_media_captions: bool = None,
+        hide_sender_name: bool = None,
+        hide_captions: bool = None,
         protect_content: bool = None
     ) -> Union["types.Message", List["types.Message"]]:
         """Forward messages of any kind.
@@ -66,10 +66,10 @@ class ForwardMessages:
             schedule_date (:py:obj:`~datetime.datetime`, *optional*):
                 Date when the message will be automatically sent.
 
-            drop_author (``bool``, *optional*):
+            hide_sender_name (``bool``, *optional*):
                 If True, the original author of the message will not be shown.
 
-            drop_media_captions (``bool``, *optional*):
+            hide_captions (``bool``, *optional*):
                 If True, the original media captions will be removed.
 
             protect_content (``bool``, *optional*):
@@ -100,8 +100,8 @@ class ForwardMessages:
                 silent=disable_notification or None,
                 random_id=[self.rnd_id() for _ in message_ids],
                 schedule_date=utils.datetime_to_timestamp(schedule_date),
-                drop_author=drop_author,
-                drop_media_captions=drop_media_captions,
+                drop_author=hide_sender_name,
+                drop_media_captions=hide_captions,
                 noforwards=protect_content,
                 top_msg_id=message_thread_id
             )
