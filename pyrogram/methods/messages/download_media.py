@@ -148,7 +148,6 @@ class DownloadMedia:
             file_id_str = media.file_id
 
         file_id_obj = FileId.decode(file_id_str)
-
         file_type = file_id_obj.file_type
         media_file_name = getattr(media, "file_name", "")
         file_size = getattr(media, "file_size", 0)
@@ -193,4 +192,4 @@ class DownloadMedia:
         if block:
             return await downloader
         else:
-            asyncio.get_event_loop().create_task(downloader)
+            _ = asyncio.get_event_loop().create_task(downloader)

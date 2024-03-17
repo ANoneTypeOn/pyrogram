@@ -61,7 +61,8 @@ class Markdown:
     def __init__(self, client: Optional["pyrogram.Client"]):
         self.html = HTML(client)
 
-    def _parse_blockquotes(self, text: str):
+    @staticmethod
+    def _parse_blockquotes(text: str):
         text = html.unescape(text)
         lines = text.split('\n')
         result = []

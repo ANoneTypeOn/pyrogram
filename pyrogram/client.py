@@ -35,16 +35,15 @@ from pathlib import Path
 from typing import Union, List, Optional, Callable, AsyncGenerator
 
 import pyrogram
-from pyrogram import __version__, __license__
+from pyrogram import __version__
 from pyrogram import enums
 from pyrogram import raw
 from pyrogram import utils
 from pyrogram.crypto import aes
-from pyrogram.errors import CDNFileHashMismatch
 from pyrogram.errors import (
     SessionPasswordNeeded,
     VolumeLocNotFound, ChannelPrivate,
-    BadRequest, AuthBytesInvalid
+    BadRequest, AuthBytesInvalid, CDNFileHashMismatch
 )
 from pyrogram.handlers.handler import Handler
 from pyrogram.methods import Methods
@@ -57,6 +56,7 @@ from .file_id import FileId, FileType, ThumbnailSource
 from .mime_types import mime_types
 from .parser import Parser
 from .session.internals import MsgId
+from .storage import Storage
 
 log = logging.getLogger(__name__)
 
@@ -65,7 +65,7 @@ class Client(Methods):
     """Pyrogram Client, the main means for interacting with Telegram.
 
     Parameters:
-        name (``str``):
+        session_name (``str``):
             A name for the client, e.g.: "my_account".
 
         api_id (``int`` | ``str``, *optional*):
@@ -215,11 +215,10 @@ class Client(Methods):
 
     INVITE_LINK_RE = re.compile(r"^(?:https?://)?(?:www\.)?(?:t(?:elegram)?\.(?:org|me|dog)/(?:joinchat/|\+))([\w-]+)$")
     WORKERS = min(32, (os.cpu_count() or 0) + 4)  # os.cpu_count() can be None
-    WORKDIR = PARENT_DIR
+    DEFAULT_WORKDIR = PARENT_DIR
 
     # Interval of seconds in which the updates watchdog will kick in
-    UPDATES_WATCHDOG_INTERVAL = 15 * 60
-
+    UPDATES_WATCHDOG_INTERVAL = 5 * 60
     MAX_CONCURRENT_TRANSMISSIONS = 1
     MAX_MESSAGE_CACHE_SIZE = 10000
 
@@ -227,42 +226,48 @@ class Client(Methods):
     mimetypes.readfp(StringIO(mime_types))
 
     def __init__(
-        self,
-        name: str,
-        api_id: Union[int, str] = None,
-        api_hash: str = None,
-        app_version: str = APP_VERSION,
-        device_model: str = DEVICE_MODEL,
-        system_version: str = SYSTEM_VERSION,
-        lang_pack: str = LANG_PACK,
-        lang_code: str = LANG_CODE,
-        system_lang_code: str = SYSTEM_LANG_CODE,
-        ipv6: bool = False,
-        proxy: dict = None,
-        test_mode: bool = False,
-        bot_token: str = None,
-        session_string: str = None,
-        in_memory: bool = None,
-        phone_number: str = None,
-        phone_code: str = None,
-        password: str = None,
-        workers: int = WORKERS,
-        workdir: str = WORKDIR,
-        plugins: dict = None,
-        parse_mode: "enums.ParseMode" = enums.ParseMode.DEFAULT,
-        no_updates: bool = None,
-        skip_updates: bool = True,
-        takeout: bool = None,
-        sleep_threshold: int = Session.SLEEP_THRESHOLD,
-        hide_password: bool = False,
-        max_concurrent_transmissions: int = MAX_CONCURRENT_TRANSMISSIONS,
-        max_message_cache_size: int = MAX_MESSAGE_CACHE_SIZE,
-        storage_engine: Storage = None,
-        init_connection_params: "raw.base.JSONValue" = None
+            self,
+            session_name: str,
+            *,
+            session_storage: Optional[Storage] = None,
+            api_id: Union[int, str] = None,
+            api_hash: str = None,
+            app_version: str = APP_VERSION,
+            device_model: str = DEVICE_MODEL,
+            system_version: str = SYSTEM_VERSION,
+            system_lang_code: str = SYSTEM_LANG_CODE,
+            lang_code: str = LANG_CODE,
+            lang_pack: str = LANG_PACK,
+            ipv6: bool = False,
+            proxy: dict = None,
+            test_mode: bool = False,
+            bot_token: str = None,
+            session_string: str = None,
+            in_memory: bool = None,
+            phone_number: str = None,
+            phone_code: str = None,
+            password: str = None,
+            workers: int = WORKERS,
+            workdir: str = DEFAULT_WORKDIR,
+            plugins: dict = None,
+            parse_mode: "enums.ParseMode" = enums.ParseMode.HTML,
+            no_updates: bool = None,
+            takeout: bool = None,
+            sleep_threshold: int = Session.SLEEP_THRESHOLD,
+            hide_password: bool = False,
+            max_concurrent_transmissions: int = MAX_CONCURRENT_TRANSMISSIONS,
+            ignore_channel_updates_except: List[int] = None,
+            message_cache_size: int = 10000,
+            first_name: str = None,
+            last_name: str = None,
+            skip_updates: bool = True,
+            max_message_cache_size: int = MAX_MESSAGE_CACHE_SIZE,
+            init_connection_params: "raw.base.JSONValue" = None
+
     ):
         super().__init__()
 
-        self.name = name
+        self.session_name = session_name
         self.api_id = int(api_id) if api_id else None
         self.api_hash = api_hash
         self.app_version = app_version
@@ -280,6 +285,8 @@ class Client(Methods):
         self.phone_number = phone_number
         self.phone_code = phone_code
         self.password = password
+        self.first_name = first_name
+        self.last_name = last_name
         self.workers = workers
         self.workdir = Path(workdir)
         self.plugins = plugins
@@ -295,39 +302,30 @@ class Client(Methods):
 
         self.executor = ThreadPoolExecutor(self.workers, thread_name_prefix="Handler")
 
-        if self.session_string:
-            self.storage = MemoryStorage(self.name, self.session_string)
-        elif self.in_memory:
-            self.storage = MemoryStorage(self.name)
-        elif isinstance(storage_engine, Storage):
-            self.storage = storage_engine
+        if isinstance(session_storage, Storage):
+            self.storage = session_storage
         else:
-            self.storage = FileStorage(self.name, self.workdir)
+            if self.session_string:
+                self.storage = MemoryStorage(self.session_name, self.session_string)
+            elif self.in_memory:
+                self.storage = MemoryStorage(self.session_name)
+            else:
+                self.storage = FileStorage(self.session_name, self.workdir)
 
         self.dispatcher = Dispatcher(self)
-
         self.rnd_id = MsgId
-
         self.parser = Parser(self)
-
         self.session = None
-
         self.media_sessions = {}
         self.media_sessions_lock = asyncio.Lock()
-
         self.save_file_semaphore = asyncio.Semaphore(self.max_concurrent_transmissions)
         self.get_file_semaphore = asyncio.Semaphore(self.max_concurrent_transmissions)
-
         self.is_connected = None
         self.is_initialized = None
-
         self.takeout_id = None
-
         self.disconnect_handler = None
-
         self.me: Optional[User] = None
-
-        self.message_cache = Cache(self.max_message_cache_size)
+        self.message_cache = Cache(message_cache_size)
 
         # Sometimes, for some reason, the server will stop sending updates and will only respond to pings.
         # This watchdog will invoke updates.GetState in order to wake up the server and enable it sending updates again
@@ -337,6 +335,7 @@ class Client(Methods):
         self.last_update_time = datetime.now()
 
         self.loop = asyncio.get_event_loop()
+        self.ignore_channel_updates_except = ignore_channel_updates_except
 
     def __enter__(self):
         return self.start()
@@ -360,7 +359,7 @@ class Client(Methods):
         while True:
             try:
                 await asyncio.wait_for(self.updates_watchdog_event.wait(), self.UPDATES_WATCHDOG_INTERVAL)
-            except asyncio.TimeoutError:
+            except (asyncio.TimeoutError, TimeoutError):
                 pass
             else:
                 break
@@ -368,117 +367,94 @@ class Client(Methods):
             if datetime.now() - self.last_update_time > timedelta(seconds=self.UPDATES_WATCHDOG_INTERVAL):
                 await self.invoke(raw.functions.updates.GetState())
 
+    async def fetch_phone_number(self) -> str:
+        phone_number = self.phone_number
+
+        if not bool(phone_number):
+            phone_number = await ainput("Enter phone number: ")
+
+        if not bool(phone_number):
+            raise RuntimeError("The phone number or bot token required for new authorizations")
+
+        phone_number = re.sub(r"\D", "", phone_number)
+
+        return phone_number
+
+    async def fetch_phone_code(self) -> str:
+        phone_code = self.phone_code
+
+        if not bool(phone_code):
+            phone_code = await ainput("Enter confirmation code: ")
+
+        if not bool(phone_code):
+            raise RuntimeError("The auth code required for signing in")
+
+        phone_code = re.sub(r"\D", "", phone_code)
+
+        return phone_code
+
+    async def fetch_password(self, hint: str = None) -> str:
+        password = self.password
+
+        if not bool(password):
+            password = await ainput(
+                f"Enter password (empty to recover). Hint: {hint}: ",
+                hide=self.hide_password
+            )
+
+        return password
+
+    async def fetch_first_name(self) -> str:
+        first_name = self.first_name
+
+        if not bool(first_name):
+            first_name = await ainput(f"Enter first name: ")
+
+        if not bool(first_name):
+            raise RuntimeError("The first name required for new authorizations")
+
+        return first_name
+
+    async def fetch_last_name(self) -> str:
+        last_name = self.last_name
+
+        if not bool(last_name):
+            last_name = await ainput(f"Enter first name: ")
+
+        return last_name
+
     async def authorize(self) -> User:
         if self.bot_token:
             return await self.sign_in_bot(self.bot_token)
 
-        print(f"Welcome to Pyrogram (version {__version__})")
-        print(f"Pyrogram is free software and comes with ABSOLUTELY NO WARRANTY. Licensed\n"
-              f"under the terms of the {__license__}.\n")
+        phone_number = await self.fetch_phone_number()
+        sent_code = await self.send_code(phone_number)
+        log.debug(f"The confirmation code for {phone_number} has been sent via {sent_code.description}")
+        phone_code = await self.fetch_phone_code()
 
-        while True:
-            try:
-                if not self.phone_number:
-                    while True:
-                        value = await ainput("Enter phone number or bot token: ")
+        try:
+            signed_in = await self.sign_in(self.phone_number, sent_code.phone_code_hash, phone_code)
+        except SessionPasswordNeeded as e:
+            log.info(e.MESSAGE)
+            password_info = await self.invoke(raw.functions.account.GetPassword())
+            password = await self.fetch_password(password_info.hint)
 
-                        if not value:
-                            continue
+            if not bool(password):
+                raise
 
-                        confirm = (await ainput(f'Is "{value}" correct? (y/N): ')).lower()
-
-                        if confirm == "y":
-                            break
-
-                    if ":" in value:
-                        self.bot_token = value
-                        return await self.sign_in_bot(value)
-                    else:
-                        self.phone_number = value
-
-                sent_code = await self.send_code(self.phone_number)
-            except BadRequest as e:
-                print(e.MESSAGE)
-                self.phone_number = None
-                self.bot_token = None
-            else:
-                break
-
-        sent_code_descriptions = {
-            enums.SentCodeType.APP: "Telegram app",
-            enums.SentCodeType.SMS: "SMS",
-            enums.SentCodeType.CALL: "phone call",
-            enums.SentCodeType.FLASH_CALL: "phone flash call",
-            enums.SentCodeType.FRAGMENT_SMS: "Fragment SMS",
-            enums.SentCodeType.EMAIL_CODE: "email code"
-        }
-
-        print(f"The confirmation code has been sent via {sent_code_descriptions[sent_code.type]}")
-
-        while True:
-            if not self.phone_code:
-                self.phone_code = await ainput("Enter confirmation code: ")
-
-            try:
-                signed_in = await self.sign_in(self.phone_number, sent_code.phone_code_hash, self.phone_code)
-            except BadRequest as e:
-                print(e.MESSAGE)
-                self.phone_code = None
-            except SessionPasswordNeeded as e:
-                print(e.MESSAGE)
-
-                while True:
-                    print("Password hint: {}".format(await self.get_password_hint()))
-
-                    if not self.password:
-                        self.password = await ainput("Enter password (empty to recover): ", hide=self.hide_password)
-
-                    try:
-                        if not self.password:
-                            confirm = await ainput("Confirm password recovery (y/n): ")
-
-                            if confirm == "y":
-                                email_pattern = await self.send_recovery_code()
-                                print(f"The recovery code has been sent to {email_pattern}")
-
-                                while True:
-                                    recovery_code = await ainput("Enter recovery code: ")
-
-                                    try:
-                                        return await self.recover_password(recovery_code)
-                                    except BadRequest as e:
-                                        print(e.MESSAGE)
-                                    except Exception as e:
-                                        log.exception(e)
-                                        raise
-                            else:
-                                self.password = None
-                        else:
-                            return await self.check_password(self.password)
-                    except BadRequest as e:
-                        print(e.MESSAGE)
-                        self.password = None
-            else:
-                break
+            return await self.check_password(password, password_info=password_info)
 
         if isinstance(signed_in, User):
             return signed_in
 
-        while True:
-            first_name = await ainput("Enter first name: ")
-            last_name = await ainput("Enter last name (empty to skip): ")
-
-            try:
-                signed_up = await self.sign_up(
-                    self.phone_number,
-                    sent_code.phone_code_hash,
-                    first_name,
-                    last_name
-                )
-            except BadRequest as e:
-                print(e.MESSAGE)
-            else:
-                break
+        first_name = await self.fetch_first_name()
+        last_name = await self.fetch_last_name()
+        signed_up = await self.sign_up(
+            self.phone_number,
+            sent_code.phone_code_hash,
+            first_name,
+            last_name or ""
+        )
 
         if isinstance(signed_in, TermsOfService):
             print("\n" + signed_in.text + "\n")
@@ -613,6 +589,12 @@ class Client(Methods):
                 if isinstance(update, raw.types.UpdateNewChannelMessage) and is_min:
                     message = update.message
 
+                    if (
+                            bool(self.ignore_channel_updates_except) and
+                            utils.get_channel_id(channel_id) not in self.ignore_channel_updates_except
+                    ):
+                        continue
+
                     if not isinstance(message, raw.types.MessageEmpty):
                         try:
                             diff = await self.invoke(
@@ -685,44 +667,30 @@ class Client(Methods):
 
         if session_empty:
             if not self.api_id or not self.api_hash:
-                raise AttributeError("The API key is required for new authorizations. "
-                                     "More info: https://docs.pyrogram.org/start/auth")
+                raise AttributeError(
+                    "The API key is required for new authorizations. "
+                    "More info: https://docs.pyrogram.org/start/auth"
+                )
 
             await self.storage.api_id(self.api_id)
-
             await self.storage.dc_id(2)
             await self.storage.date(0)
-
             await self.storage.test_mode(self.test_mode)
             await self.storage.auth_key(
                 await Auth(
-                    self, await self.storage.dc_id(),
+                    self,
+                    await self.storage.dc_id(),
                     await self.storage.test_mode()
                 ).create()
             )
             await self.storage.user_id(None)
             await self.storage.is_bot(None)
         else:
-            # Needed for migration from storage v2 to v3
             if not await self.storage.api_id():
-                if self.api_id:
-                    await self.storage.api_id(self.api_id)
-                else:
-                    while True:
-                        try:
-                            value = int(await ainput("Enter the api_id part of the API key: "))
+                if not self.api_id:
+                    raise RuntimeError("The API ID is required for new authorizations")
 
-                            if value <= 0:
-                                print("Invalid value")
-                                continue
-
-                            confirm = (await ainput(f'Is "{value}" correct? (y/N): ')).lower()
-
-                            if confirm == "y":
-                                await self.storage.api_id(value)
-                                break
-                        except Exception as e:
-                            print(e)
+                await self.storage.api_id(self.api_id)
 
     def load_plugins(self):
         if self.plugins:
@@ -757,24 +725,28 @@ class Client(Methods):
                                     self.add_handler(handler, group)
 
                                     log.info('[{}] [LOAD] {}("{}") in group {} from "{}"'.format(
-                                        self.name, type(handler).__name__, name, group, module_path))
+                                        self.session_name, type(handler).__name__, name, group, module_path))
 
                                     count += 1
                         except Exception:
                             pass
             else:
                 for path, handlers in include:
-                    module_path = root + "." + path
+                    if not bool(root) or root == ".":
+                        module_path = path
+                    else:
+                        module_path = root + "." + path
+
                     warn_non_existent_functions = True
 
                     try:
                         module = import_module(module_path)
                     except ImportError:
-                        log.warning('[%s] [LOAD] Ignoring non-existent module "%s"', self.name, module_path)
+                        log.warning('[%s] [LOAD] Ignoring non-existent module "%s"', self.session_name, module_path)
                         continue
 
                     if "__path__" in dir(module):
-                        log.warning('[%s] [LOAD] Ignoring namespace "%s"', self.name, module_path)
+                        log.warning('[%s] [LOAD] Ignoring namespace "%s"', self.session_name, module_path)
                         continue
 
                     if handlers is None:
@@ -789,27 +761,30 @@ class Client(Methods):
                                     self.add_handler(handler, group)
 
                                     log.info('[{}] [LOAD] {}("{}") in group {} from "{}"'.format(
-                                        self.name, type(handler).__name__, name, group, module_path))
+                                        self.session_name, type(handler).__name__, name, group, module_path))
 
                                     count += 1
                         except Exception:
                             if warn_non_existent_functions:
                                 log.warning('[{}] [LOAD] Ignoring non-existent function "{}" from "{}"'.format(
-                                    self.name, name, module_path))
+                                    self.session_name, name, module_path))
 
             if exclude:
                 for path, handlers in exclude:
-                    module_path = root + "." + path
+                    if not bool(root) or root == ".":
+                        module_path = path
+                    else:
+                        module_path = root + "." + path
                     warn_non_existent_functions = True
 
                     try:
                         module = import_module(module_path)
                     except ImportError:
-                        log.warning('[%s] [UNLOAD] Ignoring non-existent module "%s"', self.name, module_path)
+                        log.warning('[%s] [UNLOAD] Ignoring non-existent module "%s"', self.session_name, module_path)
                         continue
 
                     if "__path__" in dir(module):
-                        log.warning('[%s] [UNLOAD] Ignoring namespace "%s"', self.name, module_path)
+                        log.warning('[%s] [UNLOAD] Ignoring namespace "%s"', self.session_name, module_path)
                         continue
 
                     if handlers is None:
@@ -824,19 +799,19 @@ class Client(Methods):
                                     self.remove_handler(handler, group)
 
                                     log.info('[{}] [UNLOAD] {}("{}") from group {} in "{}"'.format(
-                                        self.name, type(handler).__name__, name, group, module_path))
+                                        self.session_name, type(handler).__name__, name, group, module_path))
 
                                     count -= 1
                         except Exception:
                             if warn_non_existent_functions:
                                 log.warning('[{}] [UNLOAD] Ignoring non-existent function "{}" from "{}"'.format(
-                                    self.name, name, module_path))
+                                    self.session_name, name, module_path))
 
             if count > 0:
                 log.info('[{}] Successfully loaded {} plugin{} from "{}"'.format(
-                    self.name, count, "s" if count > 1 else "", root))
+                    self.session_name, count, "s" if count > 1 else "", root))
             else:
-                log.warning('[%s] No plugin loaded from "%s"', self.name, root)
+                log.warning('[%s] No plugin loaded from "%s"', self.session_name, root)
 
     async def handle_download(self, packet):
         file_id, directory, file_name, in_memory, file_size, progress, progress_args = packet
@@ -1094,6 +1069,8 @@ class Client(Methods):
                 raise
             except Exception as e:
                 log.exception(e)
+            finally:
+                await session.stop()
 
     def guess_mime_type(self, filename: str) -> Optional[str]:
         return self.mimetypes.guess_type(filename)[0]

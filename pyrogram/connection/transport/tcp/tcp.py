@@ -17,12 +17,11 @@
 #  along with Pyrogram.  If not, see <http://www.gnu.org/licenses/>.
 
 import asyncio
-import ipaddress
 import logging
-import socket
-from concurrent.futures import ThreadPoolExecutor
+from typing import Optional
 
-import socks
+from python_socks import ProxyType
+from python_socks.async_.asyncio import Proxy
 
 log = logging.getLogger(__name__)
 
@@ -32,66 +31,69 @@ class TCP:
 
     def __init__(self, ipv6: bool, proxy: dict):
         self.socket = None
-
-        self.reader = None
-        self.writer = None
-
+        self.reader: Optional[asyncio.StreamReader] = None
+        self.writer: Optional[asyncio.StreamWriter] = None
         self.lock = asyncio.Lock()
         self.loop = asyncio.get_event_loop()
+        self.proxy = self._parse_proxy(proxy) if proxy else None
+        self.ipv6 = ipv6
 
-        self.proxy = proxy
+    @staticmethod
+    def _parse_proxy(proxy_data: Optional[dict]) -> Optional[Proxy]:
+        if proxy_data is None:
+            return None
 
-        if proxy:
-            hostname = proxy.get("hostname")
+        if not isinstance(proxy_data, dict):
+            raise TypeError("Proxy must be a dict")
 
-            try:
-                ip_address = ipaddress.ip_address(hostname)
-            except ValueError:
-                self.socket = socks.socksocket(socket.AF_INET)
-            else:
-                if isinstance(ip_address, ipaddress.IPv6Address):
-                    self.socket = socks.socksocket(socket.AF_INET6)
-                else:
-                    self.socket = socks.socksocket(socket.AF_INET)
+        scheme = proxy_data.get('scheme')
+        hostname = proxy_data.get('hostname')
+        port = proxy_data.get('port')
+        rdns = proxy_data.get('rdns', True)
+        username = proxy_data.get('username', None)
+        password = proxy_data.get('password', None)
 
-            self.socket.set_proxy(
-                proxy_type=getattr(socks, proxy.get("scheme").upper()),
-                addr=hostname,
-                port=proxy.get("port", None),
-                username=proxy.get("username", None),
-                password=proxy.get("password", None)
-            )
+        if isinstance(scheme, str):
+            scheme = scheme.lower()
 
-            self.socket.settimeout(TCP.TIMEOUT)
-
-            log.info("Using proxy %s", hostname)
+        if scheme == ProxyType.SOCKS5 or scheme == 2 or scheme == "socks5":
+            protocol = ProxyType.SOCKS5
+        elif scheme == ProxyType.SOCKS4 or scheme == 1 or scheme == "socks4":
+            protocol = ProxyType.SOCKS4
+        elif scheme == ProxyType.HTTP or scheme == 3 or scheme == "http":
+            protocol = ProxyType.HTTP
         else:
-            self.socket = socket.socket(
-                socket.AF_INET6 if ipv6
-                else socket.AF_INET
-            )
+            raise ValueError("Unknown proxy protocol type: {}".format(scheme))
 
-            self.socket.setblocking(False)
+        return Proxy(protocol, hostname, port, username=username, password=password, rdns=rdns)
 
     async def connect(self, address: tuple):
-        if self.proxy:
-            with ThreadPoolExecutor(1) as executor:
-                await self.loop.run_in_executor(executor, self.socket.connect, address)
-        else:
-            try:
-                await asyncio.wait_for(asyncio.get_event_loop().sock_connect(self.socket, address), TCP.TIMEOUT)
-            except asyncio.TimeoutError:  # Re-raise as TimeoutError. asyncio.TimeoutError is deprecated in 3.11
-                raise TimeoutError("Connection timed out")
+        (ip_addr, port) = address
 
-        self.reader, self.writer = await asyncio.open_connection(sock=self.socket)
+        if isinstance(self.proxy, Proxy):
+            self.socket = await self.proxy.connect(dest_host=ip_addr, dest_port=port, timeout=TCP.TIMEOUT)
+            log.info(f"Successfully connected to proxy {self.proxy.proxy_host}:{self.proxy.proxy_port}")
+            self.reader, self.writer = await asyncio.wait_for(
+                asyncio.open_connection(sock=self.socket),
+                timeout=TCP.TIMEOUT,
+            )
+        else:
+            self.reader, self.writer = await asyncio.wait_for(
+                asyncio.open_connection(host=ip_addr, port=port),
+                timeout=TCP.TIMEOUT
+            )
+
+        await self.writer.drain()
 
     async def close(self):
-        try:
-            if self.writer is not None:
-                self.writer.close()
-                await asyncio.wait_for(self.writer.wait_closed(), TCP.TIMEOUT)
-        except Exception as e:
-            log.info("Close exception: %s %s", type(e).__name__, e)
+        if self.writer is not None and not self.writer.is_closing():
+            self.writer.close()
+            try:
+                await asyncio.wait_for(self.writer.wait_closed(), timeout=TCP.TIMEOUT)
+            except (asyncio.TimeoutError, TimeoutError):
+                log.warning('Graceful disconnection timed out, forcibly ignoring cleanup')
+            except BaseException as e:
+                log.warning('%s during disconnect: %s', type(e).__name__, e)
 
     async def send(self, data: bytes):
         async with self.lock:
@@ -99,20 +101,17 @@ class TCP:
                 if self.writer is not None:
                     self.writer.write(data)
                     await self.writer.drain()
-            except Exception as e:
+            except BaseException as e:
                 log.info("Send exception: %s %s", type(e).__name__, e)
-                raise OSError(e)
+                raise OSError(e) from e
 
-    async def recv(self, length: int = 0):
+    async def recv(self, length: int = 0) -> Optional[bytes]:
         data = b""
 
         while len(data) < length:
             try:
-                chunk = await asyncio.wait_for(
-                    self.reader.read(length - len(data)),
-                    TCP.TIMEOUT
-                )
-            except (OSError, asyncio.TimeoutError):
+                chunk = await asyncio.wait_for(self.reader.read(length - len(data)), TCP.TIMEOUT)
+            except (OSError, asyncio.TimeoutError, TimeoutError):
                 return None
             else:
                 if chunk:

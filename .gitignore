@@ -5,7 +5,7 @@ config.ini
 main.py
 unknown_errors.txt
 .DS_Store
-
+./test.py
 # Pyrogram generated code
 pyrogram/errors/exceptions/
 pyrogram/raw/functions/
@@ -16,7 +16,7 @@ docs/source/telegram
 docs/source/api/methods/
 docs/source/api/bound-methods/
 docs/source/api/types/
-
+./sessions/
 # PyCharm stuff
 .idea/
 

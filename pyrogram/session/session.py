@@ -126,8 +126,8 @@ class Session:
                                 device_model=self.client.device_model,
                                 system_version=self.client.system_version,
                                 system_lang_code=self.client.system_lang_code,
-                                lang_pack=self.client.lang_pack,
                                 lang_code=self.client.lang_code,
+                                lang_pack=self.client.lang_pack or "",
                                 query=raw.functions.help.GetConfig(),
                                 params=self.client.init_connection_params,
                             )
@@ -139,7 +139,7 @@ class Session:
 
                 log.info("Session initialized: Layer %s", layer)
                 log.info("Device: %s - %s", self.client.device_model, self.client.app_version)
-                log.info("System: %s (%s)", self.client.system_version, self.client.lang_code)
+                log.info("System: %s (%s)", self.client.system_version, self.client.system_lang_code.upper())
             except AuthKeyDuplicated as e:
                 await self.stop()
                 raise e
@@ -275,7 +275,7 @@ class Session:
         while True:
             try:
                 await asyncio.wait_for(self.ping_task_event.wait(), self.PING_INTERVAL)
-            except asyncio.TimeoutError:
+            except (asyncio.TimeoutError, TimeoutError):
                 pass
             else:
                 break
@@ -287,7 +287,7 @@ class Session:
                     ), False
                 )
             except OSError:
-                self.loop.create_task(self.restart())
+                await self.loop.create_task(self.restart())
                 break
             except RPCError:
                 pass
@@ -352,7 +352,7 @@ class Session:
         if wait_response:
             try:
                 await asyncio.wait_for(self.results[msg_id].event.wait(), timeout)
-            except asyncio.TimeoutError:
+            except (asyncio.TimeoutError, TimeoutError):
                 pass
 
             result = self.results.pop(msg_id).value
@@ -384,7 +384,7 @@ class Session:
     ):
         try:
             await asyncio.wait_for(self.is_started.wait(), self.WAIT_TIMEOUT)
-        except asyncio.TimeoutError:
+        except (asyncio.TimeoutError, TimeoutError):
             pass
 
         if isinstance(query, (raw.functions.InvokeWithoutUpdates, raw.functions.InvokeWithTakeout)):
@@ -404,7 +404,7 @@ class Session:
                     raise
 
                 log.warning('[%s] Waiting for %s seconds before continuing (required by "%s")',
-                            self.client.name, amount, query_name)
+                            self.client.session_name, amount, query_name)
 
                 await asyncio.sleep(amount)
             except (OSError, InternalServerError, ServiceUnavailable) as e:

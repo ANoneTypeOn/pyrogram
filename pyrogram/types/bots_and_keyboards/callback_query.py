@@ -16,10 +16,22 @@
 #  You should have received a copy of the GNU Lesser General Public License
 #  along with Pyrogram.  If not, see <http://www.gnu.org/licenses/>.
 
-from typing import Union, List, Match, Optional
+from typing import (
+    List,
+    Match,
+    Optional,
+    Union,
+)
+from urllib.parse import (
+    parse_qsl,
+    urlparse,
+)
 
 import pyrogram
-from pyrogram import raw, enums
+from pyrogram import (
+    enums,
+    raw,
+)
 from pyrogram import types
 from ..object import Object
 from ..update import Update
@@ -311,3 +323,16 @@ class CallbackQuery(Object, Update):
                 inline_message_id=self.inline_message_id,
                 reply_markup=reply_markup
             )
+
+    @property
+    def params(self) -> dict:
+        if not bool(self.data):
+            return {}
+
+        parsed_data = urlparse(self.data)
+        _params = {}
+
+        if parsed_data and parsed_data.query:
+            _params = dict(parse_qsl(parsed_data.query))
+
+        return _params

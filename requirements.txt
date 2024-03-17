@@ -1,2 +1,4 @@
-pyaes==1.6.1
-pysocks==1.7.1
+tgcrypto>=1.2.5
+pysocks~=1.7.1
+python-socks[asyncio]~=2.4.4
+orjson~=3.9.15

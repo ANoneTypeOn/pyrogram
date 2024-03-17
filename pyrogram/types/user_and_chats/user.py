@@ -204,10 +204,23 @@ class User(Object, Update):
         phone_number: str = None,
         photo: "types.ChatPhoto" = None,
         restrictions: List["types.Restriction"] = None,
-        reply_color: "types.ChatColor" = None,
-        profile_color: "types.ChatColor" = None
+        close_friend: Optional[bool] = None,
+        stories_hidden: Optional[bool] = None,
+        stories_unavailable: Optional[bool] = None,
+        stories_max_id: Optional[int] = None,
+            reply_color: "types.ChatColor" = None,
+            profile_color: "types.ChatColor" = None
     ):
         super().__init__(client)
+
+        if username is None and usernames is not None and len(usernames) > 0:
+            for u in usernames:
+                if u.active:
+                    username = u.username
+                    break
+
+            if username is None:
+                username = usernames[0].username
 
         self.id = id
         self.is_self = is_self
@@ -240,6 +253,11 @@ class User(Object, Update):
         self.restrictions = restrictions
         self.reply_color = reply_color
         self.profile_color = profile_color
+        self.usernames = usernames
+        self.close_friend = close_friend
+        self.stories_hidden = stories_hidden
+        self.stories_unavailable = stories_unavailable
+        self.stories_max_id = stories_max_id
 
     @property
     def full_name(self) -> str:
@@ -288,7 +306,11 @@ class User(Object, Update):
             restrictions=types.List([types.Restriction._parse(r) for r in user.restriction_reason]) or None,
             reply_color=types.ChatColor._parse(getattr(user, "color", None)),
             profile_color=types.ChatColor._parse_profile_color(getattr(user, "profile_color", None)),
-            client=client
+            client=client,
+            close_friend=user.close_friend,
+            stories_hidden=user.stories_hidden,
+            stories_unavailable=user.stories_unavailable,
+            stories_max_id=user.stories_max_id,
         )
 
     @staticmethod
