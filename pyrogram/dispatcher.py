@@ -173,6 +173,16 @@ class Dispatcher:
         self.__middlewares_handlers = tuple(self.__prepare_middlewares())
         self.__run_middlewares = True if self.middlewares else False
 
+        if self.client.startup_awaitable is not None:
+            try:
+                await self.client.startup_awaitable
+
+            except (TypeError, ValueError):
+                raise TypeError("client_patch variable is not awaitable")
+
+            except RuntimeError:
+                log.warning("client_patch was already awaited. Ignoring")
+
         if not self.client.no_updates:
             for i in range(self.client.workers):
                 self.locks_list.append(asyncio.Lock())
