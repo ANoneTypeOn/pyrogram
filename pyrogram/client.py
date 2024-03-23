@@ -32,7 +32,7 @@ from importlib import import_module
 from io import StringIO, BytesIO
 from mimetypes import MimeTypes
 from pathlib import Path
-from typing import Union, List, Optional, Callable, AsyncGenerator
+from typing import Union, List, Optional, Callable, AsyncGenerator, Awaitable
 
 import pyrogram
 from pyrogram import __version__
@@ -56,7 +56,6 @@ from .file_id import FileId, FileType, ThumbnailSource
 from .mime_types import mime_types
 from .parser import Parser
 from .session.internals import MsgId
-from .storage import Storage
 
 log = logging.getLogger(__name__)
 
@@ -201,6 +200,12 @@ class Client(Methods):
         init_connection_params (:obj:`~pyrogram.raw.base.JSONValue`, *optional*):
             Additional initConnection parameters.
             For now, only the tz_offset field is supported, for specifying timezone offset in seconds.
+
+        startup_awaitable (``Awaitable``, *optional*):
+            Prepared awaitable function that will be executed on client startup.
+            Useful when you want to execute async code on startup without headache.
+            Note: client_patch will be executed as static function, so take care of passing client instance to it if
+            you want to patch client.
     """
 
     APP_VERSION = f"Pyrogram {__version__}"
@@ -262,7 +267,8 @@ class Client(Methods):
             last_name: str = None,
             skip_updates: bool = True,
             max_message_cache_size: int = MAX_MESSAGE_CACHE_SIZE,
-            init_connection_params: "raw.base.JSONValue" = None
+            init_connection_params: "raw.base.JSONValue" = None,
+            startup_awaitable: Awaitable = None
 
     ):
         super().__init__()
@@ -299,6 +305,7 @@ class Client(Methods):
         self.max_concurrent_transmissions = max_concurrent_transmissions
         self.max_message_cache_size = max_message_cache_size
         self.init_connection_params = init_connection_params
+        self.startup_awaitable = startup_awaitable
 
         self.executor = ThreadPoolExecutor(self.workers, thread_name_prefix="Handler")
 

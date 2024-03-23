@@ -74,5 +74,15 @@ class Start:
         if not isinstance(self.me, pyrogram.types.User):
             self.me = await self.get_me()
 
+        try:
+            if self.startup_awaitable is not None:
+                await self.startup_awaitable
+
+        except (TypeError, ValueError):
+            raise TypeError("client_patch variable is not awaitable")
+
+        except RuntimeError:
+            log.warning("client_patch was already awaited. Ignoring")
+
         await self.initialize()
         return self
